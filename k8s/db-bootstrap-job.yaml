@@ -1,0 +1,44 @@
+# Roda dentro do cluster porque o RDS não é acessível de fora da VPC.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-bootstrap
+  namespace: default
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      containers:
+        - name: psql
+          image: postgres:16
+          command: ["sh", "-ec"]
+          args:
+            - |
+              run() { psql -v ON_ERROR_STOP=1 -v role="$1" -v password="$2" -v dbs="$3" -f /sql/bootstrap.sql; }
+              run os_service "$OS_DB_PASSWORD" oficina_mecanica_production,oficina_mecanica_production_cache,oficina_mecanica_production_queue,oficina_mecanica_production_cable
+              run billing_service "$BILLING_DB_PASSWORD" billing_service_production,billing_service_production_cache,billing_service_production_queue,billing_service_production_cable
+          env:
+            - name: PGUSER
+              value: postgres
+            - name: PGDATABASE
+              value: postgres
+          envFrom:
+            - secretRef:
+                name: db-bootstrap
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "128Mi"
+          volumeMounts:
+            - name: sql
+              mountPath: /sql
+      volumes:
+        - name: sql
+          configMap:
+            name: db-bootstrap-sql

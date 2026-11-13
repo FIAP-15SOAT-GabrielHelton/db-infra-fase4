@@ -81,3 +81,31 @@ jobs:
             -backend-config="region=us-east-1"
 
           terraform apply -auto-approve
+
+      # Cria um usuário e os bancos de cada microsserviço (OS e Billing), isolados entre si:
+      # cada serviço só recebe a senha do seu usuário, e a senha master fica só neste repositório.
+      - name: Bootstrap Service Databases
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          OS_DB_PASSWORD: ${{ secrets.OS_DB_PASSWORD }}
+          BILLING_DB_PASSWORD: ${{ secrets.BILLING_DB_PASSWORD }}
+        run: |
+          CLUSTER_NAME=$(aws ssm get-parameter --name /oficina-mecanica/eks_cluster_name --query 'Parameter.Value' --output text)
+          RDS_HOST=$(terraform -chdir=infra output -raw rds_address)
+          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region us-east-1
+
+          kubectl create configmap db-bootstrap-sql --from-file=k8s/bootstrap.sql \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret generic db-bootstrap \
+            --from-literal=PGHOST="$RDS_HOST" \
+            --from-literal=PGPASSWORD="$DB_PASSWORD" \
+            --from-literal=OS_DB_PASSWORD="$OS_DB_PASSWORD" \
+            --from-literal=BILLING_DB_PASSWORD="$BILLING_DB_PASSWORD" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl delete job db-bootstrap --ignore-not-found=true
+          kubectl apply -f k8s/db-bootstrap-job.yaml
+          kubectl wait --for=condition=complete --timeout=300s job/db-bootstrap
+
+          # As senhas não precisam ficar no cluster depois do bootstrap.
+          kubectl delete secret db-bootstrap

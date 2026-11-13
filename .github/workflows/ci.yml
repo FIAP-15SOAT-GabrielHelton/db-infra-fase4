@@ -7,9 +7,6 @@ name: CI (Terraform Validate)
 on:
   pull_request:
     branches: [main]
-    paths:
-      - "infra/**"
-      - ".github/workflows/ci.yml"
 
 jobs:
   validate:
