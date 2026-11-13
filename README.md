@@ -1,18 +1,20 @@
-# db-infra
+# db-infra-fase4
 
-Infraestrutura do banco de dados gerenciado (Terraform) do projeto **Oficina Mecânica** — Fase 3 do Tech Challenge FIAP.
+Infraestrutura do banco de dados relacional (Terraform) do projeto **Oficina Mecânica** — Fase 4 do Tech Challenge FIAP.
 
-Provisiona a instância RDS PostgreSQL usada pela aplicação principal (repositório [`api`](https://github.com/FIAP-15SOAT-GabrielHelton/api)).
+Provisiona a instância RDS PostgreSQL usada pelo `os-service` e pelo `billing-service`, e cria **um usuário e um conjunto de bancos isolados para cada serviço**: um serviço não consegue conectar nos bancos do outro. O `execution-service` usa MongoDB, provisionado pelo `k8s-infra-fase4`.
 
-Este repositório faz parte de um conjunto de 5 (arquitetura completa na [RFC-001](https://github.com/FIAP-15SOAT-GabrielHelton/api/blob/main/docs/fase3/RFC-001-authentication-authorization-serverless.md) do repo `api`). A escolha do PostgreSQL como motor de banco e o modelo relacional (diagrama ER, relacionamentos, índices/constraints de consistência) estão formalmente justificados na [RFC-003](https://github.com/FIAP-15SOAT-GabrielHelton/api/blob/main/docs/fase3/RFC-003-escolha-do-banco-e-modelo.md), também no repo `api`:
+A visão geral da Fase 4 — arquitetura, Saga e os sete repositórios — está no README do [`os-service`](https://github.com/FIAP-15SOAT-GabrielHelton/os-service#arquitetura) e na [RFC-005](https://github.com/FIAP-15SOAT-GabrielHelton/os-service/blob/main/docs/fase4/RFC-005-microsservicos-e-saga.md). A escolha do PostgreSQL vem da Fase 3 e está justificada na [RFC-003](https://github.com/FIAP-15SOAT-GabrielHelton/os-service/blob/main/docs/fase3/RFC-003-escolha-do-banco-e-modelo.md).
 
 | Repositório | Responsabilidade |
 | :--- | :--- |
-| [`k8s-infra`](https://github.com/FIAP-15SOAT-GabrielHelton/k8s-infra) | VPC + EKS + node group |
-| `db-infra` (este repo) | RDS PostgreSQL |
-| [`api`](https://github.com/FIAP-15SOAT-GabrielHelton/api) | Aplicação Rails + ECR + deploy no cluster |
-| [`auth-serverless`](https://github.com/FIAP-15SOAT-GabrielHelton/auth-serverless) | API Gateway + Lambdas de autenticação/RBAC |
-| [`deploy-orchestrator`](https://github.com/FIAP-15SOAT-GabrielHelton/deploy-orchestrator) | Dispara e aguarda o deploy dos 4 repos acima, em ordem |
+| [`os-service`](https://github.com/FIAP-15SOAT-GabrielHelton/os-service) | Microsserviço de Ordens de Serviço (cadastros, estoque e ciclo de vida da OS) — PostgreSQL |
+| [`billing-service`](https://github.com/FIAP-15SOAT-GabrielHelton/billing-service) | Microsserviço de orçamento e pagamento (Mercado Pago) — PostgreSQL |
+| [`execution-service`](https://github.com/FIAP-15SOAT-GabrielHelton/execution-service) | Microsserviço de fila e andamento da execução — MongoDB |
+| [`k8s-infra-fase4`](https://github.com/FIAP-15SOAT-GabrielHelton/k8s-infra-fase4) | VPC, EKS, RabbitMQ, MongoDB e New Relic |
+| `db-infra-fase4` (este repo) | RDS PostgreSQL, com usuário e bancos isolados por serviço |
+| [`auth-serverless-fase4`](https://github.com/FIAP-15SOAT-GabrielHelton/auth-serverless-fase4) | API Gateway e Lambdas de autenticação/RBAC |
+| [`deploy-orchestrator-fase4`](https://github.com/FIAP-15SOAT-GabrielHelton/deploy-orchestrator-fase4) | Deploy e destroy de todos os repositórios, em sequência |
 
 ## Tecnologias utilizadas
 
@@ -20,6 +22,7 @@ Este repositório faz parte de um conjunto de 5 (arquitetura completa na [RFC-00
 | :--- | :--- |
 | IaC | Terraform (`hashicorp/aws` ~> 5.0) |
 | Nuvem | AWS RDS (PostgreSQL 16), Security Group, DB Subnet Group |
+| Isolamento | Job Kubernetes com `psql` (`k8s/`): cria usuários e bancos por serviço |
 | CI/CD | GitHub Actions (`pull_request` para validação, `workflow_dispatch` para deploy/destroy) |
 | Backend do state | S3 (bucket compartilhado com os demais repositórios, key própria) |
 
@@ -27,13 +30,13 @@ Este repositório faz parte de um conjunto de 5 (arquitetura completa na [RFC-00
 
 ```mermaid
 flowchart TB
-    subgraph VPC["VPC (provisionada pelo k8s-infra)"]
-        subgraph ThisRepo["db-infra — este repositório"]
+    subgraph VPC["VPC (provisionada pelo k8s-infra-fase4)"]
+        subgraph ThisRepo["db-infra-fase4 — este repositório"]
             SG["Security Group\n(porta 5432, só de dentro da VPC)"]
             SubnetGroup["DB Subnet Group"]
             RDS[("RDS PostgreSQL 16\ndb.t3.micro, privado")]
         end
-        EKS[["Cluster EKS\n(k8s-infra, fora deste repo)"]]
+        EKS[["Cluster EKS\n(k8s-infra-fase4, fora deste repo)"]]
     end
 
     SSM[("AWS SSM\nParameter Store")]
@@ -53,29 +56,43 @@ flowchart TB
     class RDS,SSM db
 ```
 
-- **Security Group** (`infra/rds.tf`): libera PostgreSQL (`5432`) só de dentro da VPC (lida via SSM, publicada pelo `k8s-infra`) — o RDS nunca é público.
-- **DB Subnet Group**: usa as subnets públicas do `k8s-infra` (o RDS em si não é acessível de fora, apesar de estar em subnet pública — controlado pelo Security Group e por `publicly_accessible = false`).
+- **Security Group** (`infra/rds.tf`): libera PostgreSQL (`5432`) só de dentro da VPC (lida via SSM, publicada pelo `k8s-infra-fase4`) — o RDS nunca é público.
+- **DB Subnet Group**: usa as subnets públicas do `k8s-infra-fase4` (o RDS em si não é acessível de fora, apesar de estar em subnet pública — controlado pelo Security Group e por `publicly_accessible = false`).
 - **Instância RDS**: PostgreSQL 16, `db.t3.micro`, 20-100 GB (autoscaling de storage).
+
+## Isolamento entre os serviços
+
+O desafio exige que nenhum serviço acesse o banco de outro. Os dois serviços dividem a instância para caber na AWS Academy, mas o isolamento é garantido pelo próprio PostgreSQL:
+
+| Serviço | Usuário | Bancos |
+| :--- | :--- | :--- |
+| `os-service` | `os_service` | `oficina_mecanica_production` e os auxiliares `_cache`, `_queue`, `_cable` |
+| `billing-service` | `billing_service` | `billing_service_production` e os auxiliares `_cache`, `_queue`, `_cable` |
+
+O script [`k8s/bootstrap.sql`](k8s/bootstrap.sql) cria cada usuário com senha própria, torna-o dono dos seus bancos e executa `REVOKE CONNECT ... FROM PUBLIC` em cada um. Resultado: `os_service` não conecta nos bancos do Billing, e vice-versa. O usuário master (`postgres`) fica só com este repositório; nenhum serviço o conhece.
+
+Como o RDS é privado, o script roda de dentro do cluster, como um Job ([`k8s/db-bootstrap-job.yaml`](k8s/db-bootstrap-job.yaml)). É idempotente: pode rodar a cada deploy.
 
 ## Dependências
 
-Lê do SSM Parameter Store (publicados pelo `k8s-infra`, que precisa ser implantado primeiro):
+Lê do SSM Parameter Store (publicados pelo `k8s-infra-fase4`, que precisa ser implantado primeiro):
 
 | Parâmetro | Uso |
 | :--- | :--- |
 | `/oficina-mecanica/vpc_id` | VPC onde o RDS e seu Security Group são criados |
 | `/oficina-mecanica/subnet_ids` | Subnets do DB Subnet Group |
+| `/oficina-mecanica/eks_cluster_name` | Cluster onde o Job de isolamento roda |
 
 ## Parâmetros publicados
 
 | Parâmetro | Valor | Consumido por |
 | :--- | :--- | :--- |
-| `/oficina-mecanica/rds_address` | Address do RDS PostgreSQL | `api` |
-| `/oficina-mecanica/rds_endpoint` | Endpoint (`host:porta`) do RDS PostgreSQL | `api` |
+| `/oficina-mecanica/rds_address` | Address do RDS PostgreSQL | `os-service`, `billing-service` |
+| `/oficina-mecanica/rds_endpoint` | Endpoint (`host:porta`) do RDS PostgreSQL | `os-service`, `billing-service` |
 
 ## Execução local
 
-Não há aplicação para "rodar" — apenas o Terraform pode ser validado localmente (o `apply` real exige uma sessão AWS Academy ativa e o `k8s-infra` já implantado):
+Não há aplicação para "rodar" — apenas o Terraform pode ser validado localmente (o `apply` real exige uma sessão AWS Academy ativa e o `k8s-infra-fase4` já implantado):
 
 ```bash
 cd infra/
@@ -84,7 +101,7 @@ terraform validate
 terraform fmt -check
 ```
 
-Para um `plan` completo (exige credenciais AWS válidas, o backend S3 e o `k8s-infra` já implantados):
+Para um `plan` completo (exige credenciais AWS válidas, o backend S3 e o `k8s-infra-fase4` já implantados):
 
 ```bash
 terraform init \
@@ -97,11 +114,15 @@ TF_VAR_db_password=<senha> terraform plan
 
 ## Configuração necessária
 
-Secret do repositório: `DB_PASSWORD` (senha do usuário `postgres` do RDS).
+Secrets do repositório:
+
+- `DB_PASSWORD` — senha do usuário master (`postgres`) do RDS.
+- `OS_DB_PASSWORD` — senha do usuário `os_service` (a mesma configurada como `DB_PASSWORD` no repositório `os-service`).
+- `BILLING_DB_PASSWORD` — senha do usuário `billing_service` (a mesma configurada como `DB_PASSWORD` no repositório `billing-service`).
 
 ## CI
 
-Workflow `CI (Terraform Validate)` (`.github/workflows/ci.yml`), disparado em toda Pull Request contra `main` que toque em `infra/**` — é o status check exigido pela proteção da branch `main` antes do merge. Sem credenciais AWS disponíveis em PR (só chegam via input manual no `workflow_dispatch` de deploy), a validação cobre o que não depende de nuvem real:
+Workflow `CI (Terraform Validate)` (`.github/workflows/ci.yml`), disparado em toda Pull Request contra `main` — é o status check (`Terraform fmt & validate`) exigido pela proteção da branch `main` antes do merge. Sem credenciais AWS disponíveis em PR (só chegam via input manual no `workflow_dispatch` de deploy), a validação cobre o que não depende de nuvem real:
 
 1. **Terraform Format Check** (`terraform fmt -check -recursive`).
 2. **Terraform Init sem backend** (`terraform init -backend=false`) — baixa os providers só para validação sintática, sem acessar o bucket S3 remoto.
@@ -113,19 +134,20 @@ Não roda `terraform plan` — exigiria as credenciais efêmeras da sessão AWS 
 
 Workflow `CD Deploy (RDS PostgreSQL)` (`.github/workflows/cd_deploy.yml`, `workflow_dispatch`), disparado manualmente com as credenciais temporárias da sessão do AWS Academy. Passos do job `deploy`:
 
-1. **Mask Sensitive Credentials** — mascara as credenciais AWS e `DB_PASSWORD` no log do Actions.
+1. **Mask Sensitive Credentials** — mascara as credenciais AWS e as senhas dos bancos no log do Actions.
 2. **Configure AWS Credentials** — autentica a sessão via `aws-actions/configure-aws-credentials`.
-3. **Bootstrap S3 Backend** — reutiliza (ou cria, se ainda não existir) o bucket S3 compartilhado de state do Terraform entre os 4 repositórios.
-4. **Terraform Provisioning** — `terraform init` + `terraform apply -auto-approve`, provisionando o RDS PostgreSQL (lendo `vpc_id`/`subnet_ids` publicados pelo `k8s-infra` no SSM) e publicando `rds_address`/`rds_endpoint` no SSM para o `api` consumir.
+3. **Bootstrap S3 Backend** — reutiliza (ou cria, se ainda não existir) o bucket S3 compartilhado de state do Terraform entre os repositórios.
+4. **Terraform Provisioning** — `terraform init` + `terraform apply -auto-approve`, provisionando o RDS PostgreSQL (lendo `vpc_id`/`subnet_ids` publicados pelo `k8s-infra-fase4` no SSM) e publicando `rds_address`/`rds_endpoint` no SSM para os serviços consumirem.
+5. **Bootstrap Service Databases** — roda o Job de isolamento no cluster (usuários, bancos e `REVOKE CONNECT`) e apaga o Secret temporário com as senhas em seguida.
 
-**Pré-requisito**: o `k8s-infra` precisa ter sido implantado antes (publica os parâmetros de rede que este workflow lê).
+**Pré-requisito**: o `k8s-infra-fase4` precisa ter sido implantado antes (publica os parâmetros de rede e o cluster que este workflow usa).
 
-**Ordem de deploy do projeto**: `k8s-infra` → `db-infra` (este repo) → `api` → `auth-serverless` (ou use o [`deploy-orchestrator`](https://github.com/FIAP-15SOAT-GabrielHelton/deploy-orchestrator)).
+**Ordem de deploy do projeto**: `k8s-infra-fase4` → `db-infra-fase4` → `os-service` → `billing-service` → `execution-service` → `auth-serverless-fase4` (ou use o [`deploy-orchestrator`](https://github.com/FIAP-15SOAT-GabrielHelton/deploy-orchestrator-fase4)).
 
 ## Destroy
 
-Workflow `CD Destroy (RDS PostgreSQL)`. Deve rodar **depois** do destroy do `api` e **antes** do destroy do `k8s-infra`.
+Workflow `CD Destroy (RDS PostgreSQL)`. Deve rodar **depois** do destroy dos microsserviços e **antes** do destroy do `k8s-infra-fase4`.
 
 ## Documentação da API
 
-Este repositório não expõe nenhuma API HTTP — é infraestrutura pura. A documentação da API do projeto (Swagger/OpenAPI) vive no repositório [`api`](https://github.com/FIAP-15SOAT-GabrielHelton/api#documenta%C3%A7%C3%A3o-da-api).
+Este repositório não expõe nenhuma API HTTP — é infraestrutura pura. A documentação das APIs (Swagger/OpenAPI) vive em cada microsserviço: [`os-service`](https://github.com/FIAP-15SOAT-GabrielHelton/os-service#documentação-da-api), [`billing-service`](https://github.com/FIAP-15SOAT-GabrielHelton/billing-service#documentação-da-api) e [`execution-service`](https://github.com/FIAP-15SOAT-GabrielHelton/execution-service#documentação-da-api).
